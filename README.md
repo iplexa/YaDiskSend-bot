@@ -81,10 +81,14 @@ cp .env.example .env
 # Отредактируйте файл .env, добавив свои токены
 ```
 
-2. Для работы с PostgreSQL в Docker измените параметр `DATABASE_URL` в файле `.env`:
+2. Заполните параметры подключения к вашей PostgreSQL в файле `.env`:
 
 ```
-DATABASE_URL=postgresql://postgres:postgres@postgres/files_send_bot
+DB_HOST=ваш_хост
+DB_PORT=ваш_порт
+DB_NAME=ваша_бд
+DB_USER=ваш_пользователь
+DB_PASSWORD=ваш_пароль
 ```
 
 ### Деплой в тестовом режиме

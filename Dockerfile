@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Установка зависимостей
 WORKDIR /app
 COPY requirements.txt .
+COPY wait-for-it.sh .
+RUN chmod +x wait-for-it.sh
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 

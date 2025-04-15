@@ -5,6 +5,7 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, FSInputFile, CallbackQuery
+from urllib.parse import quote
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -107,10 +108,26 @@ async def process_fullname(message: Message, state: FSMContext):
     session.commit()
     
     # Создание папки на Яндекс.Диске
-    folder_path = f"/FilesSendBot/{full_name}"
+    folder_path = f"/PKS12_SocialStudy/{full_name}"
     try:
-        if not yadisk_client.exists(folder_path):
-            yadisk_client.mkdir(folder_path)
+        # Создаем базовую директорию
+        base_path = "/PKS12_SocialStudy"
+        max_retries = 3
+        retry_delay = 2  # секунды между попытками
+
+        for attempt in range(max_retries):
+            try:
+                if not yadisk_client.exists(base_path):
+                    yadisk_client.mkdir(base_path)
+                if not yadisk_client.exists(folder_path):
+                    yadisk_client.mkdir(folder_path)
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logging.error(f"Ошибка создания директории после {max_retries} попыток: {str(e)}")
+                    raise
+                logging.warning(f"Повторная попытка {attempt + 1} из {max_retries}...")
+                await asyncio.sleep(retry_delay)
         await message.answer(
             f"Регистрация успешна! Ваше ФИО: {full_name}", 
             reply_markup=get_main_menu(new_user.is_admin)
@@ -213,7 +230,7 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
     new_file_name = f"{new_file_name}{file_ext}"
     
     # Путь для сохранения на Яндекс.Диске
-    yadisk_path = f"/FilesSendBot/{user.full_name}/{new_file_name}"
+    yadisk_path = f"/PKS12_SocialStudy/{user.full_name}/{new_file_name}"
     
     # Скачиваем файл
     file = await bot.get_file(file_id)

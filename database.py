@@ -8,10 +8,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Получение строки подключения к базе данных из переменных окружения
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost/files_send_bot")
+DATABASE_URL = f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
 
 # Создание движка SQLAlchemy
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=3600, connect_args={'connect_timeout': 10})
 
 # Создание базового класса для моделей
 Base = declarative_base()

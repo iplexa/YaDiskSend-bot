@@ -2,9 +2,14 @@ import asyncio
 import logging
 import os
 from datetime import datetime
+import difflib
+import requests
+import json
+import unicodedata
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, FSInputFile, CallbackQuery
+from aiogram import exceptions as aiogram_exceptions
 from urllib.parse import quote
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -14,7 +19,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 import yadisk
 
-from database import session, User, FileTemplate, LogSettings, init_db
+from database import session, User, FileTemplate, LogSettings, UploadedFile, init_db
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -29,7 +34,87 @@ router = Router()
 dp.include_router(router)
 
 # Инициализация Яндекс.Диска
-yadisk_client = yadisk.YaDisk(token=os.getenv("YADISK_TOKEN"))
+try:
+    yadisk_client = yadisk.YaDisk(token=os.getenv("YADISK_TOKEN"))
+    # Проверяем токен
+    if not yadisk_client.check_token():
+        raise Exception("Invalid Yandex.Disk token")
+    logging.info("Successfully connected to Yandex.Disk")
+except Exception as e:
+    logging.error(f"Failed to initialize Yandex.Disk client: {e}")
+    raise
+
+# API для проверки на антиплагиат
+TEXT_RU_API_URL = "http://api.text.ru/post"
+
+# Функция для проверки текста на антиплагиат
+async def check_plagiarism(text):
+    try:
+        # Sanitize the input text
+        sanitized_text = unicodedata.normalize('NFKC', text)
+        sanitized_text = ''.join(c for c in sanitized_text if c.isprintable())
+
+        # Отправляем текст на проверку
+        payload = {
+            "text": sanitized_text,
+            "userkey": os.getenv("TEXT_RU_KEY")
+        }
+        response = requests.post(TEXT_RU_API_URL, json=payload)
+        result = response.json()
+        
+        if 'text_uid' not in result:
+            logging.error(f"Ошибка при отправке текста на проверку: {result.get('error_desc', 'Неизвестная ошибка')}")
+            logging.error(f"Полный ответ API: {result}")  # Log the full API response
+            logging.error(f"Sanitized text: {sanitized_text}")  # Log the sanitized text
+            return None, []
+            
+        # Получаем результаты проверки
+        check_payload = {
+            "uid": result['text_uid'],
+            "userkey": os.getenv("TEXT_RU_KEY"),
+            "jsonvisible": "detail"
+        }
+        check_result = check_response.json()
+        
+        if 'error_code' in check_result:
+            logging.error(f"Ошибка при получении результатов проверки: {check_result.get('error_desc', 'Неизвестная ошибка')}")
+            logging.error(f"Полный ответ API: {check_result}")  # Log the full API response
+            return None, []
+            
+        # Парсим результаты
+        unique_percent = float(check_result.get('text_unique', 0))
+        sources = []
+        result_json = json.loads(check_result.get('result_json', '{}'))
+        if 'urls' in result_json:
+            sources = [{
+                'url': url['url'],
+                'plagiat': url['plagiat']
+            } for url in result_json['urls']]
+            
+        return 100 - unique_percent, sources
+    except Exception as e:
+        logging.error(f"Ошибка при проверке на антиплагиат: {e}")
+        return None, []
+
+# Функция для сравнения текстов и получения процента схожести
+def get_similarity_percentage(text1, text2):
+    matcher = difflib.SequenceMatcher(None, text1, text2)
+    return round(matcher.ratio() * 100, 2)
+
+# Функция для проверки схожести с другими файлами
+async def check_similarity(user_id, file_content, file_type):
+    similar_files = []
+    existing_files = session.query(UploadedFile).filter(UploadedFile.user_id != user_id, UploadedFile.file_type == file_type).all()
+    for file in existing_files:
+        similarity = get_similarity_percentage(file_content, file.file_content)
+        if similarity > 30:  # Порог схожести в 30%
+            similar_files.append({
+                'file_name': file.file_name,
+                'similarity': similarity,
+                'user_id': file.user_id
+            })
+    
+    return similar_files
 
 # Определение состояний для FSM
 class RegistrationStates(StatesGroup):
@@ -54,8 +139,13 @@ async def send_log_message(message_text):
     if log_settings and log_settings.log_chat_id:
         try:
             await bot.send_message(chat_id=log_settings.log_chat_id, text=message_text)
+        except aiogram_exceptions.TelegramBadRequest as e:
+            logging.error(f"Ошибка при отправке лога в чат (неверный запрос): {str(e)}")
+        except aiogram_exceptions.TelegramForbiddenError as e:
+            logging.error(f"Ошибка при отправке лога в чат (доступ запрещен): {str(e)}")
         except Exception as e:
-            logging.error(f"Ошибка при отправке лога в чат: {e}")
+            logging.error(f"Неожиданная ошибка при отправке лога в чат: {str(e)}")
+            logging.exception("Подробности ошибки:")
 
 # Функция для создания главного меню
 def get_main_menu(is_admin=False):
@@ -116,19 +206,34 @@ async def process_fullname(message: Message, state: FSMContext):
         base_path = "/PKS12_SocialStudy"
         max_retries = 3
         retry_delay = 2  # секунды между попытками
+        
+        logging.info(f"Начало создания директорий для пользователя {full_name} (ID: {user_id})")
+        logging.info(f"Проверка существования базовой директории: {base_path}")
 
         for attempt in range(max_retries):
             try:
                 if not yadisk_client.exists(base_path):
+                    logging.info(f"Создание базовой директории: {base_path}")
                     yadisk_client.mkdir(base_path)
+                    logging.info(f"Базовая директория успешно создана: {base_path}")
+                else:
+                    logging.info(f"Базовая директория уже существует: {base_path}")
+
+                logging.info(f"Проверка существования пользовательской директории: {folder_path}")
                 if not yadisk_client.exists(folder_path):
+                    logging.info(f"Создание пользовательской директории: {folder_path}")
                     yadisk_client.mkdir(folder_path)
+                    logging.info(f"Пользовательская директория успешно создана: {folder_path}")
+                else:
+                    logging.info(f"Пользовательская директория уже существует: {folder_path}")
                 break
             except Exception as e:
                 if attempt == max_retries - 1:
-                    logging.error(f"Ошибка создания директории после {max_retries} попыток: {str(e)}")
+                    logging.error(f"Ошибка создания директории после {max_retries} попыток. Ошибка: {str(e)}")
+                    logging.error(f"Стек вызовов: ", exc_info=True)
                     raise
-                logging.warning(f"Повторная попытка {attempt + 1} из {max_retries}...")
+                logging.warning(f"Ошибка при попытке {attempt + 1}: {str(e)}")
+                logging.warning(f"Повторная попытка {attempt + 1} из {max_retries} через {retry_delay} секунд...")
                 await asyncio.sleep(retry_delay)
         await message.answer(
             f"Регистрация успешна! Ваше ФИО: {full_name}", 
@@ -204,6 +309,12 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
     
     # Получаем данные о файле из состояния
     data = await state.get_data()
+    if "file_id" not in data:
+        logging.warning("file_id not found in state data. Ensure that the file upload was successful.")
+        await callback.message.answer("Ошибка: файл не был загружен. Пожалуйста, попробуйте снова.")
+        await state.clear()
+        return
+    
     file_id = data["file_id"]
     original_file_name = data["file_name"]
     
@@ -234,6 +345,31 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
     # Путь для сохранения на Яндекс.Диске
     yadisk_path = f"/PKS12_SocialStudy/{user.full_name}/{new_file_name}"
     
+    # Создаем директорию, если она не существует
+    try:
+        folder_path = f"/PKS12_SocialStudy/{user.full_name}"
+        if not yadisk_client.exists("/PKS12_SocialStudy"):
+            logging.info("Creating root directory /PKS12_SocialStudy")
+            yadisk_client.mkdir("/PKS12_SocialStudy")
+        
+        if not yadisk_client.exists(folder_path):
+            logging.info(f"Creating user directory {folder_path}")
+            try:
+                yadisk_client.mkdir(folder_path)
+                logging.info(f"Successfully created directory {folder_path}")
+            except yadisk.exceptions.PathExistsError:
+                logging.warning(f"Directory {folder_path} already exists")
+            except Exception as e:
+                raise Exception(f"Failed to create user directory: {e}")
+    except Exception as e:
+        error_msg = f"Ошибка при создании папки на Яндекс.Диске: {str(e)}"
+        logging.error(error_msg)
+        await callback.message.answer("Произошла ошибка при создании папки. Пожалуйста, попробуйте позже.")
+        if os.path.exists(download_path):
+            os.remove(download_path)
+        await state.clear()
+        return
+    
     # Скачиваем файл
     file = await bot.get_file(file_id)
     file_path = file.file_path
@@ -254,22 +390,105 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
         return
     
     try:
+        # Читаем содержимое файла для проверок
+        try:
+            with open(download_path, 'rb') as file:
+                # Читаем бинарные данные и удаляем нулевые байты
+                binary_content = file.read()
+                binary_content = binary_content.replace(b'\x00', b'')
+                # Пробуем декодировать в UTF-8
+                try:
+                    file_content = binary_content.decode('utf-8')
+                except UnicodeDecodeError:
+                    # Если не удалось декодировать в UTF-8, пробуем другие кодировки
+                    for encoding in ['cp1251', 'latin1', 'iso-8859-1']:
+                        try:
+                            file_content = binary_content.decode(encoding)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    else:
+                        file_content = 'Содержимое файла не может быть прочитано'
+        except Exception as e:
+            logging.error(f"Ошибка при чтении файла: {str(e)}")
+            file_content = 'Содержимое файла не может быть прочитано'
+        
+        # Проверяем схожесть с другими файлами
+        similar_files = await check_similarity(user.id, file_content, file_type)
+        
+        # Проверяем на антиплагиат, если это эссе
+        plagiarism_result = None
+        # if file_type == 'essay':
+        #     plagiarism_percentage, sources = await check_plagiarism(file_content)
+        #     if plagiarism_percentage is not None:
+        #         plagiarism_result = {
+        #             'percentage': plagiarism_percentage,
+        #             'sources': sources
+        #         }
+        
         # Загружаем файл на Яндекс.Диск
-        yadisk_client.upload(download_path, yadisk_path)
+        try:
+            yadisk_client.upload(download_path, yadisk_path)
+        except UnicodeError as e:
+            # Если возникла ошибка с кодировкой при загрузке
+            logging.error(f"Ошибка кодировки при загрузке файла: {str(e)}")
+            # Пробуем нормализовать имя файла
+            normalized_path = unicodedata.normalize('NFKC', yadisk_path)
+            yadisk_client.upload(download_path, normalized_path)
+            yadisk_path = normalized_path
         
-        await callback.message.answer(
-            f"Файл успешно загружен на Яндекс.Диск как {new_file_name}",
-            reply_markup=get_main_menu(user.is_admin)
+        # Сохраняем информацию о файле в базе данных
+        uploaded_file = UploadedFile(
+            user_id=user.id,
+            file_name=new_file_name,
+            file_type=file_type,
+            file_content=file_content,
+            file_path=yadisk_path
         )
+        try:
+            session.add(uploaded_file)
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logging.error(f"Ошибка при сохранении в базу данных: {str(e)}")
+            raise
         
-        # Отправка лога о загрузке файла
+        # Формируем сообщение о результатах проверок
+        result_message = f"Файл успешно загружен на Яндекс.Диск как {new_file_name}\n\n"
+        
+        # if similar_files:
+        #     result_message += "⚠️ Обнаружены похожие файлы:\n"
+        #     for file in similar_files:
+        #         sim_user = session.query(User).filter(User.id == file['user_id']).first()
+        #         result_message += f"- {file['file_name']} (схожесть: {file['similarity']}%, автор: {sim_user.full_name})\n"
+        
+        # if plagiarism_result:
+        #     result_message += f"\n🔍 Результат проверки на антиплагиат:\n"
+        #     result_message += f"Оригинальность: {100 - plagiarism_result['percentage']}%\n"
+        #     if plagiarism_result['sources']:
+        #         result_message += "Источники:\n"
+        #         for source in plagiarism_result['sources'][:3]:  # Показываем только первые 3 источника
+        #             result_message += f"- {source}\n"
+        
+        await callback.message.answer(result_message, reply_markup=get_main_menu(user.is_admin))
+        
+        # Отправка лога о загрузке файла и результатах проверок
         log_settings = session.query(LogSettings).first()
         if log_settings and log_settings.log_file_uploads:
-            await send_log_message(
-                f"📤 Загрузка файла: {user.full_name} (ID: {user_id})\n"
-                f"Тип: {file_type_name}\n"
-                f"Имя файла: {new_file_name}"
-            )
+            log_message = f"📤 Загрузка файла: {user.full_name} (ID: {user_id})\n"
+            log_message += f"Тип: {file_type_name}\n"
+            log_message += f"Имя файла: {new_file_name}\n"
+            
+            if similar_files:
+                log_message += "\n⚠️ Обнаружены похожие файлы!\n"
+                for file in similar_files:
+                    sim_user = session.query(User).filter(User.id == file['user_id']).first()
+                    log_message += f"- {file['file_name']} (схожесть: {file['similarity']}%, автор: {sim_user.full_name})\n"
+            
+            if plagiarism_result:
+                log_message += f"\n🔍 Оригинальность: Функция в разработке."
+            
+            await send_log_message(log_message)
     except Exception as e:
         logging.error(f"Ошибка при загрузке файла на Яндекс.Диске: {e}")
         await callback.message.answer("Произошла ошибка при загрузке файла. Пожалуйста, попробуйте позже.")
@@ -293,25 +512,105 @@ async def process_replace_confirmation(callback: CallbackQuery, state: FSMContex
     download_path = data.get("download_path")
     yadisk_path = data.get("yadisk_path")
     file_type_name = data.get("file_type_name")
+    file_type = "essay" if file_type_name == "Эссе" else "presentation"
     user_id = callback.from_user.id
     user = session.query(User).filter(User.telegram_id == user_id).first()
     
     if choice == "yes":
         try:
+            # Читаем содержимое файла для проверок
+            try:
+                with open(download_path, 'rb') as file:
+                    binary_content = file.read()
+                    binary_content = binary_content.replace(b'\x00', b'')
+                    try:
+                        file_content = binary_content.decode('utf-8')
+                    except UnicodeDecodeError:
+                        for encoding in ['cp1251', 'latin1', 'iso-8859-1']:
+                            try:
+                                file_content = binary_content.decode(encoding)
+                                break
+                            except UnicodeDecodeError:
+                                continue
+                        else:
+                            file_content = 'Содержимое файла не может быть прочитано'
+            except Exception as e:
+                logging.error(f"Ошибка при чтении файла: {str(e)}")
+                file_content = 'Содержимое файла не может быть прочитано'
+
+            # Проверяем схожесть с другими файлами
+            similar_files = await check_similarity(user.id, file_content, file_type)
+
+            # Проверяем на антиплагиат, если это эссе
+            plagiarism_result = None
+            # if file_type == 'essay':
+            #     plagiarism_percentage, sources = await check_plagiarism(file_content)
+            #     if plagiarism_percentage is not None:
+            #         plagiarism_result = {
+            #             'percentage': plagiarism_percentage,
+            #             'sources': sources
+            #         }
+
+            # Загружаем файл на Яндекс.Диск
             yadisk_client.upload(download_path, yadisk_path, overwrite=True)
-            await callback.message.answer(
-                f"Файл успешно заменен на Яндекс.Диске как {os.path.basename(yadisk_path)}",
-                reply_markup=get_main_menu(user.is_admin)
-            )
+
+            # Обновляем информацию о файле в базе данных
+            existing_file = session.query(UploadedFile).filter(
+                UploadedFile.user_id == user.id,
+                UploadedFile.file_path == yadisk_path
+            ).first()
+
+            if existing_file:
+                existing_file.file_content = file_content
+                session.commit()
+            else:
+                uploaded_file = UploadedFile(
+                    user_id=user.id,
+                    file_name=os.path.basename(yadisk_path),
+                    file_type=file_type,
+                    file_content=file_content,
+                    file_path=yadisk_path
+                )
+                session.add(uploaded_file)
+                session.commit()
+
+            # Формируем сообщение о результатах проверок
+            result_message = f"Файл успешно заменен на Яндекс.Диске как {os.path.basename(yadisk_path)}\n\n"
+
+            # if similar_files:
+            #     result_message += "⚠️ Обнаружены похожие файлы:\n"
+            #     for file in similar_files:
+            #         similar_user = session.query(User).filter(User.id == file['user_id']).first()
+            #         result_message += f"- {file['file_name']} (схожесть: {file['similarity']}%, автор: {similar_user.full_name})\n"
+
+            # if plagiarism_result:
+            #     result_message += f"\n🔍 Результат проверки на антиплагиат:\n"
+            #     result_message += f"Оригинальность: {100 - plagiarism_result['percentage']}%\n"
+            #     if plagiarism_result['sources']:
+            #         result_message += "Источники:\n"
+            #         for source in plagiarism_result['sources'][:3]:
+            #             result_message += f"- {source['url']} (совпадение: {source['plagiat']}%)\n"
+
+            await callback.message.answer(result_message, reply_markup=get_main_menu(user.is_admin))
             
             # Отправка лога о загрузке файла
             log_settings = session.query(LogSettings).first()
             if log_settings and log_settings.log_file_uploads:
-                await send_log_message(
-                    f"📤 Замена файла: {user.full_name} (ID: {user_id})\n"
-                    f"Тип: {file_type_name}\n"
-                    f"Имя файла: {os.path.basename(yadisk_path)}"
-                )
+                log_message = f"📤 Замена файла: {user.full_name} (ID: {user_id})\n"
+                log_message += f"Тип: {file_type_name}\n"
+                log_message += f"Имя файла: {os.path.basename(yadisk_path)}\n"
+
+                if similar_files:
+                    log_message += "\n⚠️ Обнаружены похожие файлы!\n"
+                    for file in similar_files:
+                        similar_user = session.query(User).filter(User.id == file['user_id']).first()
+                        log_message += f"- {file['file_name']} (схожесть: {file['similarity']}%, автор: {similar_user.full_name})\n"
+
+                
+                log_message += f"\n🔍 Оригинальность: функция в разработке."
+
+                await send_log_message(log_message)
+
         except Exception as e:
             logging.error(f"Ошибка при замене файла на Яндекс.Диске: {e}")
             await callback.message.answer("Произошла ошибка при замене файла. Пожалуйста, попробуйте позже.")

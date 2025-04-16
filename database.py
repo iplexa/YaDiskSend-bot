@@ -45,12 +45,27 @@ class LogSettings(Base):
     __tablename__ = "log_settings"
     
     id = Column(Integer, primary_key=True)
-    log_chat_id = Column(String, nullable=True)
+    log_chat_id = Column(BigInteger, nullable=True)
     log_registrations = Column(Boolean, default=True)
     log_file_uploads = Column(Boolean, default=True)
     
     def __repr__(self):
         return f"<LogSettings(id={self.id}, log_chat_id={self.log_chat_id})>"
+
+# Модель для хранения информации о загруженных файлах
+class UploadedFile(Base):
+    __tablename__ = "uploaded_files"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False)
+    file_name = Column(String, nullable=False)
+    file_type = Column(String, nullable=False)  # 'essay' или 'presentation'
+    file_content = Column(Text, nullable=False)  # содержимое файла для быстрого сравнения
+    file_path = Column(String, nullable=False)  # путь на Яндекс.Диске
+    created_at = Column(DateTime, default=func.now())
+    
+    def __repr__(self):
+        return f"<UploadedFile(id={self.id}, user_id={self.user_id}, file_name={self.file_name}, file_type={self.file_type})>"
 
 # Создание сессии для работы с базой данных
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

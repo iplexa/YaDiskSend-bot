@@ -1,13 +1,18 @@
-# Python
+# Byte-compiled files
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
+
+# Virtual environment
+.venv/
+env/
+venv/
+.env
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
 dist/
-downloads/
 eggs/
 .eggs/
 lib/
@@ -16,38 +21,26 @@ parts/
 sdist/
 var/
 wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+pip-wheel-metadata/
+share/python-wheels/
 
-# Виртуальное окружение
-venv/
-env/
-ENV/
-.env
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Локальные настройки и конфиденциальные данные
-.env
-*.log
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Кэш и временные файлы
-.pytest_cache/
-.coverage
+# Unit test / coverage reports
 htmlcov/
 .tox/
 .nox/
-.hypothesis/
-.coverage.*
+coverage.xml
+*.cover
+*.py,cover
+.cache
+nosetests.xml
+coverage_html_report/
 
-# Специфичные для проекта FilesSendBot
-*.db
-*.sqlite3
-*.bak
-tmp/
-.DS_Store
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Pytest
+.cache

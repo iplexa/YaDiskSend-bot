@@ -38,6 +38,8 @@ class RegistrationStates(StatesGroup):
 class UploadStates(StatesGroup):
     waiting_for_file = State()
     waiting_for_file_type = State()
+    waiting_for_replace_confirmation = State()
+    
     
 class AdminStates(StatesGroup):
     waiting_for_admin_action = State()
@@ -238,6 +240,19 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
     download_path = f"temp_{file_id}{file_ext}"
     await bot.download_file(file_path, download_path)
     
+    # Проверяем, существует ли файл на Яндекс.Диске
+    if yadisk_client.exists(yadisk_path):
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Да", callback_data="replace:yes")
+        builder.button(text="Нет", callback_data="replace:no")
+        await callback.message.answer(
+            f"Файл с именем {new_file_name} уже существует. Заменить его?",
+            reply_markup=builder.as_markup()
+        )
+        await state.update_data(download_path=download_path, yadisk_path=yadisk_path, file_type_name=file_type_name)
+        await state.set_state(UploadStates.waiting_for_replace_confirmation)
+        return
+    
     try:
         # Загружаем файл на Яндекс.Диск
         yadisk_client.upload(download_path, yadisk_path)
@@ -256,7 +271,7 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
                 f"Имя файла: {new_file_name}"
             )
     except Exception as e:
-        logging.error(f"Ошибка при загрузке файла на Яндекс.Диск: {e}")
+        logging.error(f"Ошибка при загрузке файла на Яндекс.Диске: {e}")
         await callback.message.answer("Произошла ошибка при загрузке файла. Пожалуйста, попробуйте позже.")
     finally:
         # Удаляем временный файл
@@ -269,6 +284,45 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
 @router.message(UploadStates.waiting_for_file)
 async def wrong_file(message: Message):
     await message.answer("Пожалуйста, отправьте файл (документ).")
+
+@router.callback_query(UploadStates.waiting_for_replace_confirmation, F.data.startswith("replace:"))
+async def process_replace_confirmation(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    choice = callback.data.split(":")[1]
+    data = await state.get_data()
+    download_path = data.get("download_path")
+    yadisk_path = data.get("yadisk_path")
+    file_type_name = data.get("file_type_name")
+    user_id = callback.from_user.id
+    user = session.query(User).filter(User.telegram_id == user_id).first()
+    
+    if choice == "yes":
+        try:
+            yadisk_client.upload(download_path, yadisk_path, overwrite=True)
+            await callback.message.answer(
+                f"Файл успешно заменен на Яндекс.Диске как {os.path.basename(yadisk_path)}",
+                reply_markup=get_main_menu(user.is_admin)
+            )
+            
+            # Отправка лога о загрузке файла
+            log_settings = session.query(LogSettings).first()
+            if log_settings and log_settings.log_file_uploads:
+                await send_log_message(
+                    f"📤 Замена файла: {user.full_name} (ID: {user_id})\n"
+                    f"Тип: {file_type_name}\n"
+                    f"Имя файла: {os.path.basename(yadisk_path)}"
+                )
+        except Exception as e:
+            logging.error(f"Ошибка при замене файла на Яндекс.Диске: {e}")
+            await callback.message.answer("Произошла ошибка при замене файла. Пожалуйста, попробуйте позже.")
+    else:
+        await callback.message.answer("Загрузка файла отменена.", reply_markup=get_main_menu(user.is_admin))
+    
+    # Удаляем временный файл
+    if download_path and os.path.exists(download_path):
+        os.remove(download_path)
+    
+    await state.clear()
 
 # Обработчик админ-меню
 @router.callback_query(AdminStates.waiting_for_admin_action, F.data.startswith("admin:"))
@@ -425,6 +479,18 @@ async def process_user_action(callback: CallbackQuery, state: FSMContext):
     await state.update_data(user_action=action)
     await callback.message.answer("Введите ID пользователя:")
     await state.set_state(AdminStates.waiting_for_user_id)
+
+@router.callback_query(AdminStates.waiting_for_user_management, F.data == "admin:back")
+async def process_user_list_back(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer("Админ-панель:", reply_markup=get_admin_menu())
+    await state.set_state(AdminStates.waiting_for_admin_action)
+
+@router.callback_query(F.data == "admin:back")
+async def process_admin_back(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text("Админ-панель:", reply_markup=get_admin_menu())
+    await state.set_state(AdminStates.waiting_for_admin_action)
 
 # Обработчик ввода ID пользователя
 @router.message(AdminStates.waiting_for_user_id)

@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, func, Text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, func, Text, BigInteger
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
@@ -21,7 +21,7 @@ class User(Base):
     __tablename__ = "users"
     
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False)
+    telegram_id = Column(BigInteger, unique=True, nullable=False)
     full_name = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now())

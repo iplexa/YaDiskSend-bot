@@ -303,14 +303,18 @@ async def process_file(message: Message, state: FSMContext):
 async def process_file_type(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     
+    start_time = datetime.now()
+    logging.info(f"[{start_time}] Начало обработки файла после выбора типа")
+    
     file_type = callback.data.split(":")[1]  # essay или presentation
     user_id = callback.from_user.id
     user = session.query(User).filter(User.telegram_id == user_id).first()
+    logging.info(f"[{datetime.now()}] Пользователь: {user.full_name} (ID: {user_id}), выбранный тип файла: {file_type}")
     
     # Получаем данные о файле из состояния
     data = await state.get_data()
     if "file_id" not in data:
-        logging.warning("file_id not found in state data. Ensure that the file upload was successful.")
+        logging.warning(f"[{datetime.now()}] file_id not found in state data. Ensure that the file upload was successful.")
         await callback.message.answer("Ошибка: файл не был загружен. Пожалуйста, попробуйте снова.")
         await state.clear()
         return
@@ -320,6 +324,7 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
     
     # Определяем расширение файла
     _, file_ext = os.path.splitext(original_file_name)
+    logging.info(f"[{datetime.now()}] Оригинальное имя файла: {original_file_name}, расширение: {file_ext}")
     
     # Получаем шаблон имени файла из базы данных
     template = session.query(FileTemplate).first()
@@ -331,6 +336,7 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
     # Формируем новое имя файла по шаблону
     current_date = datetime.now().strftime("%Y-%m-%d")
     file_type_name = "Эссе" if file_type == "essay" else "Презентация"
+    logging.info(f"[{datetime.now()}] Формирование имени файла, тип: {file_type_name}")
     
     # Разбиваем ФИО на части
     name_parts = user.full_name.split()
@@ -341,29 +347,32 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
     new_file_name = new_file_name.replace("[фамилия]", surname)
     new_file_name = new_file_name.replace("[тип]", file_type_name)
     new_file_name = f"{new_file_name}{file_ext}"
+    logging.info(f"[{datetime.now()}] Сформировано новое имя файла: {new_file_name}")
     
     # Путь для сохранения на Яндекс.Диске
     yadisk_path = f"/PKS12_SocialStudy/{user.full_name}/{new_file_name}"
+    logging.info(f"[{datetime.now()}] Путь для сохранения на Яндекс.Диске: {yadisk_path}")
     
     # Создаем директорию, если она не существует
     try:
         folder_path = f"/PKS12_SocialStudy/{user.full_name}"
+        logging.info(f"[{datetime.now()}] Проверка существования директорий")
         if not yadisk_client.exists("/PKS12_SocialStudy"):
-            logging.info("Creating root directory /PKS12_SocialStudy")
+            logging.info(f"[{datetime.now()}] Создание корневой директории /PKS12_SocialStudy")
             yadisk_client.mkdir("/PKS12_SocialStudy")
         
         if not yadisk_client.exists(folder_path):
-            logging.info(f"Creating user directory {folder_path}")
+            logging.info(f"[{datetime.now()}] Создание директории пользователя {folder_path}")
             try:
                 yadisk_client.mkdir(folder_path)
-                logging.info(f"Successfully created directory {folder_path}")
+                logging.info(f"[{datetime.now()}] Директория пользователя успешно создана: {folder_path}")
             except yadisk.exceptions.PathExistsError:
-                logging.warning(f"Directory {folder_path} already exists")
+                logging.warning(f"[{datetime.now()}] Директория {folder_path} уже существует")
             except Exception as e:
                 raise Exception(f"Failed to create user directory: {e}")
     except Exception as e:
         error_msg = f"Ошибка при создании папки на Яндекс.Диске: {str(e)}"
-        logging.error(error_msg)
+        logging.error(f"[{datetime.now()}] {error_msg}")
         await callback.message.answer("Произошла ошибка при создании папки. Пожалуйста, попробуйте позже.")
         if os.path.exists(download_path):
             os.remove(download_path)
@@ -371,16 +380,20 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
         return
     
     # Скачиваем файл
+    logging.info(f"[{datetime.now()}] Начало скачивания файла с Telegram серверов")
     file = await bot.get_file(file_id)
     file_path = file.file_path
     download_path = f"temp_{file_id}{file_ext}"
     await bot.download_file(file_path, download_path)
+    logging.info(f"[{datetime.now()}] Файл успешно скачан во временный файл: {download_path}")
     
     # Проверяем, существует ли файл на Яндекс.Диске
+    logging.info(f"[{datetime.now()}] Проверка существования файла на Яндекс.Диске: {yadisk_path}")
     if yadisk_client.exists(yadisk_path):
         builder = InlineKeyboardBuilder()
         builder.button(text="Да", callback_data="replace:yes")
         builder.button(text="Нет", callback_data="replace:no")
+        logging.info(f"[{datetime.now()}] Файл {new_file_name} уже существует на Яндекс.Диске, запрос подтверждения замены")
         await callback.message.answer(
             f"Файл с именем {new_file_name} уже существует. Заменить его?",
             reply_markup=builder.as_markup()
@@ -391,30 +404,45 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
     
     try:
         # Читаем содержимое файла для проверок
+        logging.info(f"[{datetime.now()}] Начало чтения содержимого файла для проверок")
         try:
             with open(download_path, 'rb') as file:
                 # Читаем бинарные данные и удаляем нулевые байты
                 binary_content = file.read()
                 binary_content = binary_content.replace(b'\x00', b'')
+                logging.info(f"[{datetime.now()}] Файл прочитан, размер: {len(binary_content)} байт")
                 # Пробуем декодировать в UTF-8
                 try:
                     file_content = binary_content.decode('utf-8')
+                    logging.info(f"[{datetime.now()}] Файл успешно декодирован в UTF-8")
                 except UnicodeDecodeError:
                     # Если не удалось декодировать в UTF-8, пробуем другие кодировки
+                    logging.info(f"[{datetime.now()}] Ошибка декодирования UTF-8, пробуем альтернативные кодировки")
                     for encoding in ['cp1251', 'latin1', 'iso-8859-1']:
                         try:
                             file_content = binary_content.decode(encoding)
+                            logging.info(f"[{datetime.now()}] Файл успешно декодирован в кодировке {encoding}")
                             break
                         except UnicodeDecodeError:
                             continue
                     else:
+                        logging.warning(f"[{datetime.now()}] Не удалось декодировать файл ни в одной кодировке")
                         file_content = 'Содержимое файла не может быть прочитано'
         except Exception as e:
-            logging.error(f"Ошибка при чтении файла: {str(e)}")
+            logging.error(f"[{datetime.now()}] Ошибка при чтении файла: {str(e)}")
             file_content = 'Содержимое файла не может быть прочитано'
         
-        # Проверяем схожесть с другими файлами
-        similar_files = await check_similarity(user.id, file_content, file_type)
+        # Проверяем схожесть с другими файлами только для эссе
+        similar_files = []
+        if file_type == 'essay':
+            logging.info(f"[{datetime.now()}] Начало проверки схожести с другими файлами")
+            similar_files = await check_similarity(user.id, file_content, file_type)
+            if similar_files:
+                logging.info(f"[{datetime.now()}] Найдено {len(similar_files)} похожих файлов")
+            else:
+                logging.info(f"[{datetime.now()}] Похожих файлов не найдено")
+        else:
+            logging.info(f"[{datetime.now()}] Проверка схожести пропущена для презентации")
         
         # Проверяем на антиплагиат, если это эссе
         plagiarism_result = None
@@ -427,17 +455,22 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
         #         }
         
         # Загружаем файл на Яндекс.Диск
+        logging.info(f"[{datetime.now()}] Начало загрузки файла на Яндекс.Диск: {yadisk_path}")
         try:
             yadisk_client.upload(download_path, yadisk_path)
+            logging.info(f"[{datetime.now()}] Файл успешно загружен на Яндекс.Диск")
         except UnicodeError as e:
             # Если возникла ошибка с кодировкой при загрузке
-            logging.error(f"Ошибка кодировки при загрузке файла: {str(e)}")
+            logging.error(f"[{datetime.now()}] Ошибка кодировки при загрузке файла: {str(e)}")
             # Пробуем нормализовать имя файла
             normalized_path = unicodedata.normalize('NFKC', yadisk_path)
+            logging.info(f"[{datetime.now()}] Попытка загрузки с нормализованным путем: {normalized_path}")
             yadisk_client.upload(download_path, normalized_path)
             yadisk_path = normalized_path
+            logging.info(f"[{datetime.now()}] Файл успешно загружен с нормализованным путем")
         
         # Сохраняем информацию о файле в базе данных
+        logging.info(f"[{datetime.now()}] Сохранение информации о файле в базе данных")
         uploaded_file = UploadedFile(
             user_id=user.id,
             file_name=new_file_name,
@@ -448,9 +481,10 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
         try:
             session.add(uploaded_file)
             session.commit()
+            logging.info(f"[{datetime.now()}] Информация о файле успешно сохранена в базе данных")
         except Exception as e:
             session.rollback()
-            logging.error(f"Ошибка при сохранении в базу данных: {str(e)}")
+            logging.error(f"[{datetime.now()}] Ошибка при сохранении в базу данных: {str(e)}")
             raise
         
         # Формируем сообщение о результатах проверок
@@ -473,9 +507,12 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer(result_message, reply_markup=get_main_menu(user.is_admin))
         
         # Отправка лога о загрузке файла и результатах проверок
+        logging.info(f"[{datetime.now()}] Подготовка сообщения для отправки в лог-чат")
         log_settings = session.query(LogSettings).first()
         if log_settings and log_settings.log_file_uploads:
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             log_message = f"📤 Загрузка файла: {user.full_name} (ID: {user_id})\n"
+            log_message += f"Время: {current_time}\n"
             log_message += f"Тип: {file_type_name}\n"
             log_message += f"Имя файла: {new_file_name}\n"
             
@@ -488,14 +525,23 @@ async def process_file_type(callback: CallbackQuery, state: FSMContext):
             if plagiarism_result:
                 log_message += f"\n🔍 Оригинальность: Функция в разработке."
             
+            logging.info(f"[{datetime.now()}] Отправка сообщения в лог-чат")
             await send_log_message(log_message)
+            logging.info(f"[{datetime.now()}] Сообщение успешно отправлено в лог-чат")
     except Exception as e:
-        logging.error(f"Ошибка при загрузке файла на Яндекс.Диске: {e}")
+        logging.error(f"[{datetime.now()}] Ошибка при загрузке файла на Яндекс.Диске: {e}")
         await callback.message.answer("Произошла ошибка при загрузке файла. Пожалуйста, попробуйте позже.")
     finally:
         # Удаляем временный файл
         if os.path.exists(download_path):
+            logging.info(f"[{datetime.now()}] Удаление временного файла: {download_path}")
             os.remove(download_path)
+            logging.info(f"[{datetime.now()}] Временный файл успешно удален")
+        
+        # Вычисляем общее время выполнения
+        end_time = datetime.now()
+        execution_time = (end_time - start_time).total_seconds()
+        logging.info(f"[{end_time}] Завершение обработки файла. Общее время выполнения: {execution_time} секунд")
     
     await state.clear()
 
@@ -507,7 +553,13 @@ async def wrong_file(message: Message):
 @router.callback_query(UploadStates.waiting_for_replace_confirmation, F.data.startswith("replace:"))
 async def process_replace_confirmation(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    
+    start_time = datetime.now()
+    logging.info(f"[{start_time}] Начало обработки подтверждения замены файла")
+    
     choice = callback.data.split(":")[1]
+    logging.info(f"[{datetime.now()}] Выбор пользователя: {choice}")
+    
     data = await state.get_data()
     download_path = data.get("download_path")
     yadisk_path = data.get("yadisk_path")
@@ -515,31 +567,48 @@ async def process_replace_confirmation(callback: CallbackQuery, state: FSMContex
     file_type = "essay" if file_type_name == "Эссе" else "presentation"
     user_id = callback.from_user.id
     user = session.query(User).filter(User.telegram_id == user_id).first()
+    logging.info(f"[{datetime.now()}] Пользователь: {user.full_name} (ID: {user_id}), тип файла: {file_type_name}, путь: {yadisk_path}")
     
     if choice == "yes":
         try:
+            logging.info(f"[{datetime.now()}] Начало процесса замены файла")
             # Читаем содержимое файла для проверок
+            logging.info(f"[{datetime.now()}] Начало чтения содержимого файла для проверок: {download_path}")
             try:
                 with open(download_path, 'rb') as file:
                     binary_content = file.read()
                     binary_content = binary_content.replace(b'\x00', b'')
+                    logging.info(f"[{datetime.now()}] Файл прочитан, размер: {len(binary_content)} байт")
                     try:
                         file_content = binary_content.decode('utf-8')
+                        logging.info(f"[{datetime.now()}] Файл успешно декодирован в UTF-8")
                     except UnicodeDecodeError:
+                        logging.info(f"[{datetime.now()}] Ошибка декодирования UTF-8, пробуем альтернативные кодировки")
                         for encoding in ['cp1251', 'latin1', 'iso-8859-1']:
                             try:
                                 file_content = binary_content.decode(encoding)
+                                logging.info(f"[{datetime.now()}] Файл успешно декодирован в кодировке {encoding}")
                                 break
                             except UnicodeDecodeError:
                                 continue
                         else:
+                            logging.warning(f"[{datetime.now()}] Не удалось декодировать файл ни в одной кодировке")
                             file_content = 'Содержимое файла не может быть прочитано'
             except Exception as e:
-                logging.error(f"Ошибка при чтении файла: {str(e)}")
+                logging.error(f"[{datetime.now()}] Ошибка при чтении файла: {str(e)}")
                 file_content = 'Содержимое файла не может быть прочитано'
 
-            # Проверяем схожесть с другими файлами
-            similar_files = await check_similarity(user.id, file_content, file_type)
+            # Проверяем схожесть с другими файлами только для эссе
+            similar_files = []
+            if file_type == 'essay':
+                logging.info(f"[{datetime.now()}] Начало проверки схожести с другими файлами")
+                similar_files = await check_similarity(user.id, file_content, file_type)
+                if similar_files:
+                    logging.info(f"[{datetime.now()}] Найдено {len(similar_files)} похожих файлов")
+                else:
+                    logging.info(f"[{datetime.now()}] Похожих файлов не найдено")
+            else:
+                logging.info(f"[{datetime.now()}] Проверка схожести пропущена для презентации")
 
             # Проверяем на антиплагиат, если это эссе
             plagiarism_result = None
@@ -552,18 +621,24 @@ async def process_replace_confirmation(callback: CallbackQuery, state: FSMContex
             #         }
 
             # Загружаем файл на Яндекс.Диск
+            logging.info(f"[{datetime.now()}] Начало загрузки файла на Яндекс.Диск с перезаписью: {yadisk_path}")
             yadisk_client.upload(download_path, yadisk_path, overwrite=True)
+            logging.info(f"[{datetime.now()}] Файл успешно загружен на Яндекс.Диск")
 
             # Обновляем информацию о файле в базе данных
+            logging.info(f"[{datetime.now()}] Обновление информации о файле в базе данных")
             existing_file = session.query(UploadedFile).filter(
                 UploadedFile.user_id == user.id,
                 UploadedFile.file_path == yadisk_path
             ).first()
 
             if existing_file:
+                logging.info(f"[{datetime.now()}] Найдена существующая запись в БД, обновление содержимого")
                 existing_file.file_content = file_content
                 session.commit()
+                logging.info(f"[{datetime.now()}] Запись в БД успешно обновлена")
             else:
+                logging.info(f"[{datetime.now()}] Создание новой записи в БД")
                 uploaded_file = UploadedFile(
                     user_id=user.id,
                     file_name=os.path.basename(yadisk_path),
@@ -573,6 +648,7 @@ async def process_replace_confirmation(callback: CallbackQuery, state: FSMContex
                 )
                 session.add(uploaded_file)
                 session.commit()
+                logging.info(f"[{datetime.now()}] Новая запись в БД успешно создана")
 
             # Формируем сообщение о результатах проверок
             result_message = f"Файл успешно заменен на Яндекс.Диске как {os.path.basename(yadisk_path)}\n\n"
@@ -594,9 +670,12 @@ async def process_replace_confirmation(callback: CallbackQuery, state: FSMContex
             await callback.message.answer(result_message, reply_markup=get_main_menu(user.is_admin))
             
             # Отправка лога о загрузке файла
+            logging.info(f"[{datetime.now()}] Подготовка сообщения для отправки в лог-чат")
             log_settings = session.query(LogSettings).first()
             if log_settings and log_settings.log_file_uploads:
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 log_message = f"📤 Замена файла: {user.full_name} (ID: {user_id})\n"
+                log_message += f"Время: {current_time}\n"
                 log_message += f"Тип: {file_type_name}\n"
                 log_message += f"Имя файла: {os.path.basename(yadisk_path)}\n"
 
@@ -609,17 +688,27 @@ async def process_replace_confirmation(callback: CallbackQuery, state: FSMContex
                 
                 log_message += f"\n🔍 Оригинальность: функция в разработке."
 
-                await send_log_message(log_message)
+                logging.info(f"[{datetime.now()}] Отправка сообщения в лог-чат")
+            await send_log_message(log_message)
+            logging.info(f"[{datetime.now()}] Сообщение успешно отправлено в лог-чат")
 
         except Exception as e:
-            logging.error(f"Ошибка при замене файла на Яндекс.Диске: {e}")
+            logging.error(f"[{datetime.now()}] Ошибка при замене файла на Яндекс.Диске: {e}")
             await callback.message.answer("Произошла ошибка при замене файла. Пожалуйста, попробуйте позже.")
     else:
+        logging.info(f"[{datetime.now()}] Пользователь отменил замену файла")
         await callback.message.answer("Загрузка файла отменена.", reply_markup=get_main_menu(user.is_admin))
     
     # Удаляем временный файл
     if download_path and os.path.exists(download_path):
+        logging.info(f"[{datetime.now()}] Удаление временного файла: {download_path}")
         os.remove(download_path)
+        logging.info(f"[{datetime.now()}] Временный файл успешно удален")
+    
+    # Вычисляем общее время выполнения
+    end_time = datetime.now()
+    execution_time = (end_time - start_time).total_seconds()
+    logging.info(f"[{end_time}] Завершение обработки замены файла. Общее время выполнения: {execution_time} секунд")
     
     await state.clear()
 

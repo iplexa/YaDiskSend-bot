@@ -103,8 +103,27 @@ def get_similarity_percentage(text1, text2):
 
 # Функция для проверки схожести с другими файлами
 async def check_similarity(user_id, file_content, file_type):
+    try:
+        similar_files = []
+        existing_files = session.query(UploadedFile).filter(UploadedFile.user_id != user_id, UploadedFile.file_type == file_type).all()
+        
+        # Устанавливаем тайм-аут в 5 секунд
+        try:
+            similar_files = await asyncio.wait_for(
+                _check_similarity_internal(existing_files, file_content),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            logging.warning('Проверка схожести файлов превысила лимит времени')
+            return []
+        
+        return similar_files
+    except Exception as e:
+        logging.error(f'Ошибка при проверке схожести: {e}')
+        return []
+
+async def _check_similarity_internal(existing_files, file_content):
     similar_files = []
-    existing_files = session.query(UploadedFile).filter(UploadedFile.user_id != user_id, UploadedFile.file_type == file_type).all()
     for file in existing_files:
         similarity = get_similarity_percentage(file_content, file.file_content)
         if similarity > 30:  # Порог схожести в 30%
@@ -113,7 +132,6 @@ async def check_similarity(user_id, file_content, file_type):
                 'similarity': similarity,
                 'user_id': file.user_id
             })
-    
     return similar_files
 
 # Определение состояний для FSM

@@ -627,7 +627,14 @@ async def process_replace_confirmation(callback: CallbackQuery, state: FSMContex
             similar_files = []
             if file_type == 'essay':
                 logging.info(f"[{datetime.now()}] Начало проверки схожести с другими файлами")
-                similar_files = await check_similarity(user.id, file_content, file_type)
+                try:
+                    similar_files = await asyncio.wait_for(check_similarity(user.id, file_content, file_type), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logging.warning(f"[{datetime.now()}] Превышено время ожидания проверки схожести с другими файлами")
+                    similar_files = []
+                except Exception as e:
+                    logging.error(f"[{datetime.now()}] Ошибка при проверке схожести с другими файлами: {str(e)}")
+                    similar_files = []
                 if similar_files:
                     logging.info(f"[{datetime.now()}] Найдено {len(similar_files)} похожих файлов")
                 else:
